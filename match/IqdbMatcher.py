@@ -14,7 +14,6 @@ class IqdbMatcher(Matcher):
     async def match_image(self, image_bytes, image_similarity: float):
         async with Network(timeout=60) as client:
             iqdb = Iqdb(client=client)
-            self.logger.info("Searching for image...")
             resp = await iqdb.search(file=image_bytes)
             return self._parse_response(resp)
 

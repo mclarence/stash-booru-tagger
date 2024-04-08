@@ -1,14 +1,28 @@
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
+from gql.transport.exceptions import TransportQueryError
 import requests
 import logging
 from .ImageFetchType import ImageFetchType
 from typing import Optional
-from utils import format_tag, str_list_to_str, int_list_to_str
+from utils import str_list_to_str, int_list_to_str
 import backoff
+from gql.dsl import DSLQuery, DSLSchema, dsl_gql, DSLMutation, DSLInlineFragment
 
 class StashAPI:
+    """
+    API wrapper for Stash.
+    """
+    
     def __init__(self, url, api_key, username, password):
+        """
+        Construct a new StashAPI object.
+
+        :param url: URL of the Stash instance.
+        :param api_key: API key for the Stash instance.
+        :param username: Username for the Stash instance.
+        :param password: Password for the Stash instance.
+        """
         self.logger = logging.getLogger(__name__)
         self.url = url
         self.graphql_url = f"{self.url}/graphql"
@@ -27,163 +41,238 @@ class StashAPI:
         self.transport = RequestsHTTPTransport(url=self.graphql_url, headers=self.headers)
         self.client = Client(transport=self.transport, fetch_schema_from_transport=True)
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-    def add_performer(self, name:str, disambiguation:str, tag_ids: list[int], alias_list: list[str]):
-        tag_ids.append(self.default_tag_id)
+        with self.client as session:
+            assert self.client.schema is not None
+            self.ds = DSLSchema(self.client.schema)
 
-        query = """
-            mutation {{
-                performerCreate(input:{{
-                    name: "{}"
-                    disambiguation: "{}"
-                    tag_ids: [{}]
-                    alias_list: [{}]
-                }}) {{
-                    id
-                    name
-                }}
-            }}
-            """.format(name, disambiguation, int_list_to_str(tag_ids) , str_list_to_str(alias_list))
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
+    def add_performer(self, name:str, disambiguation: Optional[str] = None, tag_ids: Optional[list[int]] = None, alias_list: Optional[list[str]] = None):
+        """
+        Add a performer to stash.
+
+        :param name: Name of the performer.
+        :param disambiguation: Disambiguation of the performer. (optional)
+        :param tag_ids: Tag ids of the performer. (optional)
+        :param alias_list: List of aliases for the performer. (optional)
+
+        """
+        input = {
+            "name": name,
+        }
         
-        return self.client.execute(gql(query))
+        if disambiguation is not None:
+            input["disambiguation"] = disambiguation
+
+        input['tag_ids'] = [self.default_tag_id]
+        if tag_ids is not None:
+            input['tag_ids'].extend(tag_ids)
+
+        if alias_list is not None:
+            input["alias_list"] = alias_list
+
+        query = dsl_gql(
+            DSLMutation(
+                self.ds.Mutation.performerCreate.args(
+                    input=input
+                ).select(
+                    self.ds.Performer.id,
+                    self.ds.Performer.name
+                )
+            )
+        )
+
+        return self.client.execute(query)
     
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
     def get_performer_by_name(self, name: str):
-        query = """
-            query {{
-                findPerformers(performer_filter: {{name: {{value: "{}", modifier: EQUALS}}}}) {{
-                    count
-                    performers {{
-                        id
-                        name
-                    }}
-                }}
-            }}
-
-        """.format(name)
-        performer_query = gql(query)
-
-        return self.client.execute(performer_query)
-
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-    def add_studio(self, studio_name: str):
-        query = """
-            mutation {{
-                studioCreate(input:{{
-                    name: "{}"
-                    details: "stash-booru-tagger"
-                }}) {{
-                    id
-                    name
-                }}
-            }}
-            """.format(studio_name)
+        """
+        Get a performer by name.
         
-        return self.client.execute(gql(query))
+        :param name: Name of the performer.
+        """
+
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.findPerformers.args(
+                    performer_filter={
+                        "name": {
+                            "value": name,
+                            "modifier": "EQUALS"
+                        }
+                    }
+                ).select(
+                    self.ds.FindPerformersResultType.count,
+                    self.ds.FindPerformersResultType.performers.select(
+                        self.ds.Performer.id,
+                        self.ds.Performer.name
+                    )
+                )
+            )
+        )
+
+        return self.client.execute(query)
+
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
+    def add_studio(self, studio_name: str):
+        """
+        Add a studio to stash.
+        
+        :param studio_name: Name of the studio.
+        """
+
+        query = dsl_gql(
+            DSLMutation(
+                self.ds.Mutation.studioCreate.args(
+                    input={
+                        "name": studio_name,
+                        "details": "stash-booru-tagger"
+                    }
+                ).select(
+                    self.ds.Studio.id,
+                    self.ds.Studio.name
+                )
+            )
+        )
+        
+        return self.client.execute(query)
     
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
     def get_studio_by_name(self, studio_name: str):
-        query = """
-            query {{
-                findStudios(studio_filter: {{name: {{value: "{}", modifier: EQUALS}}}}) {{
-                    count
-                    studios {{
-                        id
-                        name
-                    }}
-                }}
-            }}
+        """
+        Get a studio by name.
 
-        """.format(studio_name)
-        studio_query = gql(query)
+        :param studio_name: Name of the studio.
+        """
 
-        return self.client.execute(studio_query)
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.findStudios.args(
+                    studio_filter={
+                        "name": {
+                            "value": studio_name,
+                            "modifier": "EQUALS"
+                        }
+                    }
+                ).select(
+                    self.ds.FindStudiosResultType.count,
+                    self.ds.FindStudiosResultType.studios.select(
+                        self.ds.Studio.id,
+                        self.ds.Studio.name
+                    )
+                )
+            )
+        )
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-    def add_tag(self, tag_name: str, aliases: list[str]):
-        query = """
-        mutation {{
-            tagCreate(input: {{
-                name: "{}"
-                aliases: [{}]
-                parent_ids: [{}]
-            }}) {{
-                id
-                name
-            }}
-            }}
-        """.format(tag_name, str_list_to_str(aliases), self.default_tag_id)
+        return self.client.execute(query)
 
-        return self.client.execute(gql(query))
-    
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-    def add_default_tag(self, tag_name: str, aliases: list[str]):
-        query = """
-        mutation {{
-            tagCreate(input: {{
-                name: "{}"
-                aliases: [{}]
-            }}) {{
-                id
-                name
-            }}
-            }}
-        """.format(tag_name, str_list_to_str(aliases))
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
+    def add_tag(self, tag_name: str, aliases: Optional[list[str]] = None, parent_ids: Optional[list[int]] = None):
+        """
+        Add a tag to stash.
+        
+        :param tag_name: Name of the tag.
+        :param aliases: List of aliases for the tag. (optional)
+        :param parent_ids: List of parent tag ids for the tag. (optional)
+        """
+        
+        input = {
+            "name": tag_name,
+        }
 
-        return self.client.execute(gql(query))
+        if aliases is not None:
+            input["aliases"] = aliases
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+        if parent_ids is not None:
+            input["parent_ids"] = parent_ids
+
+        query = dsl_gql(
+            DSLMutation(
+                self.ds.Mutation.tagCreate.args(
+                    input=input
+                ).select(
+                    self.ds.Tag.id,
+                    self.ds.Tag.name
+                )
+            )
+        )
+
+        return self.client.execute(query)
+
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
     def get_tag_by_name(self, tag_name: str):
-        query = """
-            query {{
-                findTags(tag_filter: {{name: {{value: "{}", modifier: EQUALS}}}}) {{
-                    count
-                    tags {{
-                        id
-                        name
-                    }}
-                }}
-            }}
+        """
+        Get a tag by name.
 
-        """.format(tag_name)
-        tag_query = gql(query)
+        :param tag_name: Name of the tag.
+        """
 
-        return self.client.execute(tag_query)
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.findTags.args(
+                    tag_filter={
+                        "name": {
+                            "value": tag_name,
+                            "modifier": "EQUALS"
+                        }
+                    }
+                ).select(
+                    self.ds.FindTagsResultType.count,
+                    self.ds.FindTagsResultType.tags.select(
+                        self.ds.Tag.id,
+                        self.ds.Tag.name
+                    )
+                )
+            )
+        )
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
-    def update_image(self, image_id: int, tag_ids: list[int], performer_ids: list[int], studio_id: int, urls: list[str]):
+        return self.client.execute(query)
 
-        if studio_id is None:
-            query =  """
-            mutation {{
-                imageUpdate(input: {{
-                    id: {}
-                    tag_ids: [{}]
-                    performer_ids: [{}]
-                    urls: [{}]
-                }}) {{
-                    id
-                }}
-            }}
-            """.format(image_id, int_list_to_str(tag_ids), int_list_to_str(performer_ids), str_list_to_str(urls))
-        else:
-            query =  """
-            mutation {{
-                imageUpdate(input: {{
-                    id: {}
-                    tag_ids: [{}]
-                    performer_ids: [{}]
-                    studio_id: {}
-                    urls: [{}]
-                }}) {{
-                    id
-                }}
-            }}
-            """.format(image_id, int_list_to_str(tag_ids), int_list_to_str(performer_ids), studio_id, str_list_to_str(urls))
+    @backoff.on_exception(backoff.expo, TransportQueryError, max_tries=3)
+    def update_image(self, image_id: int, tag_ids: Optional[list[int]] = None, performer_ids: Optional[list[int]] = None, studio_id: Optional[int] = None, urls: Optional[list[str]] = None):
+        """
+        Update an image in stash.
 
-        return self.client.execute(gql(query))
+        :param image_id: Id of the image.
+        :param tag_ids: List of tag ids for the image. (optional)
+        :param performer_ids: List of performer ids for the image. (optional)
+        :param studio_id: Studio id for the image. (optional)
+        :param urls: List of urls for the image. (optional)
+        """
+
+        input = {
+            "id": image_id
+        }
+
+        if tag_ids is not None:
+            input["tag_ids"] = tag_ids
+
+        if performer_ids is not None:
+            input["performer_ids"] = performer_ids
+
+        if studio_id is not None:
+            input["studio_id"] = studio_id
+
+        if urls is not None:
+            input["urls"] = urls
+
+        query = dsl_gql(
+            DSLMutation(
+                self.ds.Mutation.imageUpdate.args(
+                    input=input
+                ).select(
+                    self.ds.Image.id
+                )
+            )
+        )
+
+        return self.client.execute(query)
 
     def load_image(self, image_url: str):
+        """
+        Downloads an image from stash.
+
+        :param image_url: URL of the image.
+        """
         self.logger.info(f"Loading image from {image_url}...")
 
         image_dl_response = self.request_session.get(image_url)
@@ -195,6 +284,12 @@ class StashAPI:
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     def get_images(self, type: ImageFetchType, id: Optional[int] = None):
+        """
+        Fetch images from stash.
+        
+        :param type: Type of image fetch.
+        :param id: Id of the image gallery or single image. (optional)
+        """
         match type:
             case ImageFetchType.ALL_IMAGES:
                 return self._get_all_images()
@@ -211,79 +306,82 @@ class StashAPI:
             
     def _get_all_images(self):
         self.logger.info("Fetching all images...")
-        query = gql("""
-            query {
-                findImages(
-                    filter: {
-                        per_page: -1
+
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.findImages.args(
+                    filter={
+                        "per_page": -1
                     }
-                ) {
-                    count
-                    images {
-                        id
-                        paths {
-                            image
-                        }
-                    }
-                }
-            }
-        """)
+                ).select(
+                    self.ds.FindImagesResultType.count,
+                    self.ds.FindImagesResultType.images.select(
+                        self.ds.Image.id,
+                        self.ds.Image.paths.select(
+                            self.ds.ImagePathsType.image
+                        )
+                    )
+                )
+            )
+        )
 
         result = self.client.execute(query)
         return result['findImages']['images']
     
     def _get_image_gallery(self, gallery_id: int):
-        query = gql("""
-            query {{
-                findImages(
-                    image_filter: {{
-                        galleries: {{
-                            value: {}
-                            modifier: INCLUDES
-                        }}
-                    }},
-                    filter: {{
-                        per_page: -1
-                    }}
-                ) {{
-                    count
-                    images {{
-                        id
-                        paths {{
-                            image
-                        }}
-                    }}
-                }}
-            }}
-        """.format(gallery_id))
+
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.findImages.args(
+                    image_filter={
+                        "galleries": {
+                            "value": gallery_id,
+                            "modifier": "INCLUDES"
+                        }
+                    },
+                    filter={
+                        "per_page": -1
+                    }
+                ).select(
+                    self.ds.FindImagesResultType.count,
+                    self.ds.FindImagesResultType.images.select(
+                        self.ds.Image.id,
+                        self.ds.Image.paths.select(
+                            self.ds.ImagePathsType.image
+                        )
+                    )
+                )
+            )
+        )
 
         result = self.client.execute(query)
         return result['findImages']['images']
     
     def _get_single_image(self, image_id: int):
-        query = gql("""
-            query {{
-                findImages(
-                    image_filter: {{
-                        id: {{
-                            value: {}
-                            modifier: EQUALS
-                        }}
-                    }},
-                    filter: {{
-                        per_page: -1
-                    }}
-                ) {{
-                    count
-                    images {{
-                        id
-                        paths {{
-                            image
-                        }}
-                    }}
-                }}
-            }}
-        """.format(image_id))
+
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.findImages.args(
+                    image_filter={
+                        "id": {
+                            "value": image_id,
+                            "modifier": "EQUALS"
+                        }
+                    },
+                    filter={
+                        "per_page": -1
+                    }
+                ).select(
+                    self.ds.FindImagesResultType.count,
+                    self.ds.FindImagesResultType.images.select(
+                        self.ds.Image.id,
+                        self.ds.Image.paths.select(
+                            self.ds.ImagePathsType.image
+                        )
+                    )
+                )
+            )
+        )
 
         result = self.client.execute(query)
         return result['findImages']['images']
@@ -300,13 +398,13 @@ class StashAPI:
     def check_api(self):
         self.logger.info("Checking API...")
 
-        query = gql("""
-            query {
-                version {
-                    version
-                }
-            }
-        """)
+        query = dsl_gql(
+            DSLQuery(
+                self.ds.Query.version.select(
+                    self.ds.Version.version
+                )
+            )
+        )
 
         result = self.client.execute(query)
         self.logger.debug(f"API version: {result['version']['version']}")
